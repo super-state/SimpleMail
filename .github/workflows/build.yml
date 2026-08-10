@@ -1,0 +1,55 @@
+name: build
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-x64:
+    name: Build Windows x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pywebview==5.3.2 pythonnet==3.0.5 bottle pillow cffi==1.17.1 pyinstaller
+
+      - name: Patch pywebview (required for .NET Core)
+        run: python patch_pywebview.py
+
+      - name: Generate icon
+        run: python make_icon.py
+
+      - name: Build exe (x64)
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name SimpleMail `
+            --icon assets\icon.ico `
+            --add-data "web;web" `
+            --add-data "assets;assets" `
+            --add-data "runtimeconfig.json;." `
+            --hidden-import webview.platforms.winforms `
+            mailapp.py
+
+      - name: Rename for x64
+        run: |
+          Get-ChildItem dist\SimpleMail.exe | Rename-Item -NewName SimpleMail-x64.exe
+          Get-ChildItem dist\SimpleMail-x64.exe | ForEach-Object {
+            $sig = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+            Write-Host "SHA256: $sig"
+          }
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ github.ref_name }} dist/SimpleMail-x64.exe --clobber

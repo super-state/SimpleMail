@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SimpleMail</title>
+<link rel="stylesheet" href="pico.min.css">
+<style>
+  :root {
+    --pico-font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    --pico-primary: #2563eb;
+    --pico-primary-hover: #1d4ed8;
+    --pico-border-radius: 10px;
+  }
+  html, body { height: 100%; margin: 0; overflow: hidden; }
+  /* UI scale: root font-size drives everything (Pico uses rem) */
+  html { font-size: 15px; }
+  body.compact { --sm-avatar: 28px; --sm-pad: 7px 12px; --sm-gap: 7px; }
+  body.large { --sm-avatar: 42px; --sm-pad: 14px 18px; --sm-gap: 12px; }
+  body { display: flex; }
+
+  /* ---- Sidebar ---- */
+  #sidebar {
+    width: 230px;
+    min-width: 230px;
+    background: #f6f8fb;
+    border-right: 1px solid var(--pico-muted-border-color);
+    display: flex;
+    flex-direction: column;
+    padding: 16px 12px;
+    gap: 4px;
+  }
+  #brand {
+    font-size: 1.15rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    padding: 4px 8px 14px;
+    color: var(--pico-primary);
+  }
+  #brand svg { vertical-align: -3px; margin-right: 6px; }
+  #compose-btn {
+    width: 100%;
+    margin-bottom: 14px;
+    border-radius: 999px;
+    font-weight: 600;
+  }
+  .folder {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    color: #374151;
+    font-size: 0.95rem;
+    border: none;
+    background: transparent;
+    width: 100%;
+    text-align: left;
+  }
+  .folder:hover { background: #e9eef5; }
+  .folder.active { background: #dbe6fb; color: var(--pico-primary); font-weight: 600; }
+  .folder .badge {
+    margin-left: auto;
+    background: var(--pico-primary);
+    color: #fff;
+    font-size: 0.7rem;
+    font-weight: 700;
+    border-radius: 999px;
+    padding: 1px 8px;
+  }
+  #sidebar-footer { margin-top: auto; display: flex; flex-direction: column; gap: 4px; }
+
+  /* ---- List pane ---- */
+  #list-pane {
+    width: 380px;
+    min-width: 320px;
+    border-right: 1px solid var(--pico-muted-border-color);
+    display: flex;
+    flex-direction: column;
+  }
+  #list-header {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--pico-muted-border-color);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  #list-header .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  #list-header h2 { margin: 0; font-size: 1.05rem; }
+  #list-header .count { color: var(--pico-muted-color); font-size: 0.8rem; }
+  #list-tools { display: flex; gap: 6px; align-items: center; }
+  #list-tools input[type=search] {
+    margin: 0;
+    padding: 4px 12px 4px 30px;  /* room for the search icon */
+    font-size: 0.82rem;
+    flex: 1;
+    min-width: 0;
+    background-position: 8px center;
+    height: 30px;
+  }
+  #list-tools .icon-btn {
+    margin: 0;
+    padding: 0;
+    width: 30px;
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    font-size: 0;
+    line-height: 1;
+    border: none;
+    background: transparent;
+    color: var(--pico-muted-color);
+    box-shadow: none;
+    transition: background 0.12s, color 0.12s;
+  }
+  #list-tools .icon-btn:hover {
+    background: #e9eef5;
+    color: #374151;
+  }
+  #list-tools .icon-btn svg { width: 15px; height: 15px; }
+  #msg-list { flex: 1; overflow-y: auto; }
+  .msg {
+    padding: var(--sm-pad, 10px 14px);
+    border-bottom: 1px solid var(--pico-muted-border-color);
+    cursor: pointer;
+    transition: background 0.12s;
+    display: flex;
+    gap: var(--sm-gap, 10px);
+    align-items: flex-start;
+  }
+  .msg:hover { background: #f3f6fb; }
+  .msg.selected { background: #e3ecfc; }
+  .msg.unread { background: #f8faff; }
+  .msg .avatar {
+    width: var(--sm-avatar, 34px); height: var(--sm-avatar, 34px);
+    min-width: var(--sm-avatar, 34px);
+    border-radius: 50%;
+    color: #fff;
+    font-size: calc(var(--sm-avatar, 34px) * 0.36);
+    font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    letter-spacing: 0.02em;
+    user-select: none;
+    margin-top: 1px;
+  }
+  .msg .content { flex: 1; min-width: 0; }
+  .msg .row1 { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .msg .from {
+    font-weight: 500; font-size: 0.9rem;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    display: flex; align-items: center; gap: 6px; min-width: 0;
+  }
+  .msg.unread .from { font-weight: 700; }
+  .udot {
+    width: 8px; height: 8px; min-width: 8px;
+    border-radius: 50%;
+    background: var(--pico-primary);
+    display: inline-block;
+  }
+  .msg.seen .udot { visibility: hidden; }
+  .msg .date { font-size: 0.72rem; color: var(--pico-muted-color); white-space: nowrap; }
+  .msg .subject {
+    font-size: 0.88rem;
+    color: #111827;
+    margin-top: 1px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .msg.unread .subject { font-weight: 600; }
+  .msg .snippet { font-size: 0.78rem; color: var(--pico-muted-color); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .msg.seen .subject, .msg.seen .snippet { color: #6b7280; }
+  .empty {
+    padding: 40px 20px;
+    text-align: center;
+    color: var(--pico-muted-color);
+  }
+
+  /* ---- Reading pane ---- */
+  #read-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; background: #fff; }
+  #read-header {
+    padding: 18px 28px 12px;
+    border-bottom: 1px solid var(--pico-muted-border-color);
+  }
+  #read-subject { font-size: 1.35rem; font-weight: 700; margin: 0 0 8px; line-height: 1.3; }
+  #read-meta { color: var(--pico-muted-color); font-size: 0.85rem; display: flex; flex-direction: column; gap: 2px; }
+  #read-meta b { color: #111827; }
+  #read-actions { margin-top: 10px; display: flex; gap: 8px; }
+  #read-actions button { padding: 4px 14px; font-size: 0.82rem; }
+  #read-body { flex: 1; overflow-y: auto; padding: 8px 28px 40px; }
+  #read-body iframe {
+    width: 100%;
+    height: calc(100vh - 260px);
+    border: none;
+    border-radius: 8px;
+    background: #fff;
+  }
+  #read-body pre {
+    white-space: pre-wrap;
+    font-family: "Segoe UI", sans-serif;
+    font-size: 0.95rem;
+    line-height: 1.55;
+    margin: 0;
+    padding: 12px 0;
+    background: none;
+  }
+  #attachments {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 10px 0 4px;
+  }
+  .att {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #f3f6fb;
+    border: 1px solid var(--pico-muted-border-color);
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 0.82rem;
+    max-width: 260px;
+  }
+  .att .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .att button { padding: 2px 10px; font-size: 0.75rem; margin: 0; width: auto; }
+  #loading {
+    padding: 40px;
+    text-align: center;
+    color: var(--pico-muted-color);
+  }
+
+  /* ---- pane divider (draggable) ---- */
+  #divider {
+    width: 5px;
+    cursor: col-resize;
+    background: transparent;
+    transition: background 0.15s;
+    z-index: 10;
+  }
+  #divider:hover, #divider.dragging { background: var(--pico-primary); opacity: 0.4; }
+  body.dragging { cursor: col-resize; user-select: none; }
+
+  /* ---- Modal (compose / settings) ---- */
+  .modal-backdrop {
+    position: fixed; inset: 0;
+    background: rgba(15, 23, 42, 0.45);
+    display: none; align-items: center; justify-content: center;
+    z-index: 50;
+  }
+  .modal-backdrop.show { display: flex; }
+  .modal {
+    background: #fff;
+    border-radius: 14px;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.25);
+    width: 680px; max-width: 92vw;
+    max-height: 88vh;
+    display: flex; flex-direction: column;
+    padding: 22px 26px;
+    overflow-y: auto;
+  }
+  #rules-list { max-height: 140px; overflow-y: auto; }
+  .modal h2 { margin: 0 0 14px; font-size: 1.2rem; }
+  .modal .field { margin-bottom: 12px; }
+  .modal label { font-size: 0.85rem; font-weight: 600; margin-bottom: 4px; display: block; }
+  .modal input[type=text], .modal input[type=password] { margin-bottom: 0; }
+  .modal textarea { margin-bottom: 0; resize: vertical; min-height: 260px; font-family: "Segoe UI", sans-serif; }
+  .rich-editor {
+    border: 1px solid var(--pico-muted-border-color);
+    border-radius: 8px;
+    min-height: 260px;
+    max-height: 46vh;
+    overflow-y: auto;
+    padding: 10px 12px;
+    font-family: "Segoe UI", sans-serif;
+    font-size: 0.95rem;
+    line-height: 1.5;
+    background: #fff;
+    outline: none;
+  }
+  .rich-editor:focus { border-color: var(--pico-primary); }
+  .rich-editor img { max-width: 100%; border-radius: 6px; }
+  #sig-preview {
+    border: 1px dashed var(--pico-muted-border-color);
+    border-radius: 8px;
+    padding: 8px 12px;
+    margin-top: 6px;
+    font-size: 0.85rem;
+    background: #fafbfc;
+    min-height: 30px;
+  }
+  #sig-preview img { max-width: 220px; border-radius: 6px; }
+  #sig-preview:empty::before { content: "Signature preview appears here"; color: var(--pico-muted-color); }
+  .modal .actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 14px; }
+  .modal .actions .left { margin-right: auto; }
+  .toast {
+    position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);
+    background: #111827; color: #fff; padding: 10px 20px; border-radius: 999px;
+    font-size: 0.85rem; z-index: 100; display: none;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+  }
+  .toast.error { background: #b91c1c; }
+
+  /* ---- right-click context menu ---- */
+  #ctx-menu {
+    position: fixed;
+    z-index: 200;
+    display: none;
+    min-width: 210px;
+    background: #fff;
+    border: 1px solid var(--pico-muted-border-color);
+    border-radius: 10px;
+    box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
+    padding: 6px;
+    font-size: 0.85rem;
+  }
+  #ctx-menu.show { display: block; }
+  #ctx-menu .ctx-head {
+    padding: 6px 10px 8px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--pico-muted-color);
+    border-bottom: 1px solid var(--pico-muted-border-color);
+    margin-bottom: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #ctx-menu .ctx-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    border-radius: 7px;
+    cursor: pointer;
+    color: #1f2937;
+    white-space: nowrap;
+  }
+  #ctx-menu .ctx-item:hover { background: #eef2f9; }
+  #ctx-menu .ctx-item.disabled { opacity: 0.45; cursor: default; }
+  #ctx-menu .ctx-item.disabled:hover { background: transparent; }
+  #ctx-menu .ctx-sep { height: 1px; background: var(--pico-muted-border-color); margin: 5px 8px; }
+  #ctx-menu .folder-ico {
+    width: 22px; height: 22px; min-width: 22px;
+    border-radius: 6px;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: #fff; font-size: 0.7rem; font-weight: 700;
+  }
+  .spinner {
+    display: inline-block; width: 16px; height: 16px;
+    border: 2px solid rgba(0,0,0,0.2); border-top-color: var(--pico-primary);
+    border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: -3px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+  <!-- Sidebar -->
+  <aside id="sidebar">
+    <div id="brand">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+        <rect x="2" y="4" width="20" height="16" rx="3"/><path d="m2 7 10 6 10-6"/>
+      </svg>
+      SimpleMail
+    </div>
+    <button id="compose-btn" class="contrast">+  New message</button>
+
+    <div id="folders"></div>
+
+    <div id="sidebar-footer">
+      <button class="folder" id="settings-btn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        Settings
+      </button>
+    </div>
+  </aside>
+
+  <!-- Message list -->
+  <section id="list-pane">
+    <div id="list-header">
+      <div class="row">
+        <h2 id="folder-title">Inbox</h2>
+        <span class="count" id="folder-count"></span>
+      </div>
+      <div id="list-tools">
+        <input type="search" id="search-box" placeholder="Search sender or subject…">
+        <button id="refresh-btn" class="icon-btn" title="Refresh">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>
+          </svg>
+        </button>
+        <button id="markall-btn" class="icon-btn" title="Mark all as read">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="4" width="20" height="16" rx="2"/>
+            <path d="m2 7 10 6 10-6"/>
+            <path d="m15.5 16 2 2 3.5-3.5"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+    <div id="msg-list"></div>
+  </section>
+
+  <!-- Draggable divider -->
+  <div id="divider" title="Drag to resize"></div>
+
+  <!-- Reading pane -->
+  <section id="read-pane">
+    <div id="read-header" style="display:none">
+      <h3 id="read-subject"></h3>
+      <div id="read-meta"></div>
+      <div id="read-actions">
+        <button id="reply-btn" class="outline">Reply</button>
+        <button id="forward-btn" class="outline">Forward</button>
+        <button id="unread-btn" class="outline">Mark unread</button>
+        <button id="delete-btn" class="outline secondary">Delete</button>
+      </div>
+    </div>
+    <div id="read-body">
+      <div id="loading">Select a message</div>
+    </div>
+  </section>
+
+  <!-- Compose modal -->
+  <div class="modal-backdrop" id="compose-backdrop">
+    <div class="modal">
+      <h2>New message</h2>
+      <div class="field"><label>To</label><input type="text" id="compose-to" placeholder="name@example.com"></div>
+      <div class="field"><label>Subject</label><input type="text" id="compose-subject"></div>
+      <div class="field"><label>Message</label>
+        <div id="compose-body" contenteditable="true" class="rich-editor"></div>
+      </div>
+      <div class="actions">
+        <button class="outline" id="draft-btn">Save draft</button>
+        <button class="outline secondary" id="cancel-btn">Cancel</button>
+        <button id="send-btn">Send</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings modal -->
+  <div class="modal-backdrop" id="settings-backdrop">
+    <div class="modal">
+      <h2>Settings</h2>
+      <div class="field"><label>Email address</label><input type="text" id="set-email"></div>
+      <div class="field"><label>Password</label><input type="password" id="set-password"></div>
+      <div class="field"><label>Signature (added to new messages)</label>
+        <textarea id="set-signature" style="min-height:90px"></textarea>
+        <div id="sig-preview"></div>
+        <button class="outline" id="sig-image-btn" style="margin-top:8px; padding:3px 12px; font-size:0.8rem; width:auto">🖼 Add image to signature</button></div>
+      <div class="field"><label>UI size</label>
+        <select id="set-scale">
+          <option value="compact">Compact</option>
+          <option value="default" selected>Default</option>
+          <option value="large">Large</option>
+        </select></div>
+      <div class="field"><label>Learned rules (right-click a message to teach the app)</label>
+        <div id="rules-list" style="font-size:0.82rem"></div></div>
+      <div class="field" style="display:flex;align-items:center;gap:10px">
+        <button class="outline" id="upd-check" style="padding:3px 12px;font-size:0.8rem;width:auto;margin:0">Check for updates</button>
+        <span style="font-size:0.78rem;color:var(--pico-muted-color)">v<span id="set-version">?</span></span>
+      </div>
+      <div class="actions">
+        <button class="outline" id="test-btn">Test connection</button>
+        <button class="outline secondary" id="settings-cancel">Cancel</button>
+        <button id="settings-save">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <!-- Right-click context menu -->
+  <div id="ctx-menu"></div>
+
+  <!-- Update available modal -->
+  <div class="modal-backdrop" id="update-backdrop">
+    <div class="modal" style="width:520px">
+      <h2>✨ Update available</h2>
+      <p style="margin:0 0 6px">A new version of SimpleMail is ready: <b id="upd-version"></b></p>
+      <div id="upd-notes" style="font-size:0.85rem;color:var(--pico-muted-color);max-height:140px;overflow-y:auto;margin-bottom:10px"></div>
+      <div id="upd-progress" style="display:none;margin-bottom:10px">
+        <progress id="upd-bar" value="0" max="100" style="margin:0"></progress>
+        <span id="upd-status" style="font-size:0.8rem;color:var(--pico-muted-color)">Downloading…</span>
+      </div>
+      <div class="actions">
+        <button class="outline secondary" id="upd-later">Later</button>
+        <button id="upd-now">Update now</button>
+      </div>
+    </div>
+  </div>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+# Build artifacts
+build/
+dist/
+*.spec
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Debug
+api_debug.log
+
+# Local config (never commit credentials)
+config.json
