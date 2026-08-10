@@ -48,6 +48,15 @@ jobs:
             Write-Host "SHA256: $sig"
           }
 
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view ${{ github.ref_name }} --json tagName >$null 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            gh release create ${{ github.ref_name }} --title ${{ github.ref_name }} --generate-notes
+          }
+
       - name: Upload to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
