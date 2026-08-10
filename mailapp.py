@@ -52,7 +52,7 @@ else:
     _WEBVIEW_IMPORT_ERROR = None
 
 APP_NAME = "SimpleMail"
-APP_VERSION = "1.0.7"
+APP_VERSION = "1.0.8"
 APP_REPO = "super-state/SimpleMail"  # owner/repo for auto-updates
 CONFIG_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -737,7 +737,9 @@ def apply_update(asset_url):
         f'start "" "{target}"\r\n'
         f'del /q "%~f0"\r\n'
     )
-    updater.write_text(bat, encoding="ascii")
+    # write as BYTES so Windows text-mode newline translation can't turn
+    # our \r\n into \r\r\n (which breaks cmd's if() block parsing)
+    updater.write_bytes(bat.encode("ascii"))
 
     # detach the updater so it survives this process's exit
     creationflags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
