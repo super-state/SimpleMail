@@ -51,7 +51,7 @@ else:
     _WEBVIEW_IMPORT_ERROR = None
 
 APP_NAME = "SimpleMail"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 APP_REPO = "super-state/SimpleMail"  # owner/repo for auto-updates
 CONFIG_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -961,7 +961,7 @@ def main():
     api = Api(cfg)
     icon_path = _BASE_DIR / "assets" / "icon.ico"
     window = webview.create_window(
-        "SimpleMail",
+        f"SimpleMail v{APP_VERSION}",
         url=url,
         js_api=api,
         width=1240,
