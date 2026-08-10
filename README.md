@@ -85,6 +85,38 @@ py -3 mailapp.py --check
 
 Prints IMAP + SMTP connection results — handy for debugging.
 
+## Auto-update & distribution
+
+SimpleMail distributes itself through **GitHub releases**:
+
+- Repo: https://github.com/super-state/SimpleMail
+- Each release carries two assets: `SimpleMail-x64.exe` (built automatically by
+  GitHub Actions) and `SimpleMail-arm64.exe` (built on an ARM64 machine).
+- On launch, the app silently checks the latest release; if a newer version
+  exists it offers **Update now / Later**. Update downloads the right .exe for
+  the machine's architecture, swaps it in, and relaunches — no installer, no
+  manual steps.
+
+### Releasing a new version (the workflow)
+
+1. **Edit code** on any machine, commit, push to `main`.
+2. **Bump the version** in `mailapp.py` (`APP_VERSION = "x.y.z"`), commit, push.
+3. **Tag and push**:
+   ```
+   git tag v1.2.3
+   git push origin v1.2.3
+   ```
+   GitHub Actions builds `SimpleMail-x64.exe` and creates the release + uploads it.
+4. **From the ARM64 machine** (this one), add the ARM64 build to the same release:
+   ```
+   publish_arm64.bat v1.2.3
+   ```
+5. Every machine running SimpleMail will now see the update prompt on next launch.
+
+Requirements for the x64 GitHub build (runs on `windows-latest`):
+Python 3.12, pyinstaller, pywebview 5.3.2, pythonnet 3.0.5, bottle, pillow,
+cffi 1.17.1 — all installed by the workflow itself.
+
 ## Project layout
 
 ```
@@ -97,6 +129,8 @@ make_icon.py          Generates assets/icon.ico
 runtimeconfig.json    .NET Core WindowsDesktop runtime config for pythonnet
 run.bat               Launcher (applies patch, starts app)
 build.bat             One-click .exe builder
+publish_arm64.bat     Build ARM64 exe + upload to a GitHub release
+.github/workflows/    GitHub Actions: auto-build x64 exe on version tags
 ```
 
 ## Troubleshooting
