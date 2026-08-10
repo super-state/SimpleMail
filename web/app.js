@@ -142,10 +142,11 @@ function renderMessages() {
     div.className = "msg" + (m.seen ? " seen" : " unread") + (m.uid === state.selectedUid ? " selected" : "");
     div.dataset.uid = m.uid;
     div.innerHTML = `
+      <span class="udot"></span>
       <div class="avatar" style="background:${hashColor(m.sender)}" title="${escapeHtml(shortFrom(m.sender))}">${escapeHtml(initials(m.sender))}</div>
       <div class="content">
         <div class="row1">
-          <span class="from"><span class="udot"></span>${escapeHtml(shortFrom(m.sender))}</span>
+          <span class="from">${escapeHtml(shortFrom(m.sender))}</span>
           <span class="date">${fmtDate(m.date)}</span>
         </div>
         <div class="subject">${escapeHtml(m.subject)}</div>

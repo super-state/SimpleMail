@@ -130,6 +130,7 @@
     display: flex;
     gap: var(--sm-gap, 10px);
     align-items: flex-start;
+    position: relative;
   }
   .msg:hover { background: #f3f6fb; }
   .msg.selected { background: #e3ecfc; }
@@ -155,10 +156,14 @@
   }
   .msg.unread .from { font-weight: 700; }
   .udot {
-    width: 8px; height: 8px; min-width: 8px;
+    position: absolute;
+    left: 5px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 8px; height: 8px;
     border-radius: 50%;
     background: var(--pico-primary);
-    display: inline-block;
+    pointer-events: none;
   }
   .msg.seen .udot { visibility: hidden; }
   .msg .date { font-size: 0.72rem; color: var(--pico-muted-color); white-space: nowrap; }
