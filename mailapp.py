@@ -52,7 +52,7 @@ else:
     _WEBVIEW_IMPORT_ERROR = None
 
 APP_NAME = "SimpleMail"
-APP_VERSION = "1.0.5"
+APP_VERSION = "1.0.6"
 APP_REPO = "super-state/SimpleMail"  # owner/repo for auto-updates
 CONFIG_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -721,20 +721,20 @@ def apply_update(asset_url):
 
     download_file(asset_url, new_exe)
 
-    # batch: wait for the old process to die, replace, restart, clean up.
-    # The relaunch can race the old process's port release, so retry the
-    # start a few times if the first attempt doesn't stick.
+    # batch: wait for the OLD process to fully exit, replace, restart once.
+    # The old instance holds the local port until it dies, so launching
+    # immediately races it - poll tasklist until it's gone instead.
     bat = (
         "@echo off\r\n"
-        "ping 127.0.0.1 -n 5 >nul\r\n"
+        ":wait_old\r\n"
+        "tasklist /FI \"IMAGENAME eq SimpleMail.exe\" | findstr /i SimpleMail >nul\r\n"
+        "if %errorlevel%==0 (\r\n"
+        "  timeout /t 2 /nobreak >nul\r\n"
+        "  goto wait_old\r\n"
+        ")\r\n"
         f'copy /y "{new_exe}" "{target}" >nul\r\n'
         f'del /q "{new_exe}"\r\n'
-        "set N=0\r\n"
-        ":loop\r\n"
-        "timeout /t 2 /nobreak >nul\r\n"
         f'start "" "{target}"\r\n'
-        "set /a N+=1\r\n"
-        "if %N% LSS 3 goto loop\r\n"
         f'del /q "%~f0"\r\n'
     )
     updater.write_text(bat, encoding="ascii")
