@@ -15,8 +15,8 @@
   html, body { height: 100%; margin: 0; overflow: hidden; }
   /* UI scale: root font-size drives everything (Pico uses rem) */
   html { font-size: 15px; }
-  body.compact { --sm-avatar: 28px; --sm-pad: 7px 12px; --sm-gap: 7px; }
-  body.large { --sm-avatar: 42px; --sm-pad: 14px 18px; --sm-gap: 12px; }
+  body.compact { --sm-avatar: 28px; --sm-pad: 6px 12px; --sm-gap: 9px; }
+  body.large { --sm-avatar: 40px; --sm-pad: 12px 18px; --sm-gap: 14px; }
   body { display: flex; }
 
   /* ---- Sidebar ---- */
@@ -123,12 +123,12 @@
   #list-tools .icon-btn svg { width: 15px; height: 15px; }
   #msg-list { flex: 1; overflow-y: auto; }
   .msg {
-    padding: var(--sm-pad, 10px 14px);
+    padding: var(--sm-pad, 10px 16px);
     border-bottom: 1px solid var(--pico-muted-border-color);
     cursor: pointer;
     transition: background 0.12s;
     display: flex;
-    gap: var(--sm-gap, 10px);
+    gap: var(--sm-gap, 12px);
     align-items: flex-start;
     position: relative;
   }
