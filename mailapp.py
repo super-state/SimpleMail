@@ -52,7 +52,7 @@ else:
     _WEBVIEW_IMPORT_ERROR = None
 
 APP_NAME = "SimpleMail"
-APP_VERSION = "1.0.9"
+APP_VERSION = "1.0.10"
 APP_REPO = "super-state/SimpleMail"  # owner/repo for auto-updates
 CONFIG_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -717,35 +717,33 @@ def apply_update(asset_url):
 
     target = exe_path
     new_exe = target.with_name(target.stem + ".new" + target.suffix)
-    updater = target.with_name("_update.bat")
+    updater = target.with_name("_update.ps1")
 
     download_file(asset_url, new_exe)
 
-    # batch: wait for the OLD process to fully exit, replace, restart once.
-    # The old instance holds the local port until it dies, so launching
-    # immediately races it - poll tasklist until it's gone instead.
-    bat = (
-        "@echo off\r\n"
-        ":wait_old\r\n"
-        "tasklist /FI \"IMAGENAME eq SimpleMail.exe\" | findstr /i SimpleMail >nul\r\n"
-        "if %errorlevel%==0 (\r\n"
-        "  timeout /t 2 /nobreak >nul\r\n"
-        "  goto wait_old\r\n"
-        ")\r\n"
-        f'copy /y "{new_exe}" "{target}" >nul\r\n'
-        f'del /q "{new_exe}"\r\n'
-        f'start "" "{target}"\r\n'
-        f'del /q "%~f0"\r\n'
-    )
-    # write as BYTES so Windows text-mode newline translation can't turn
-    # our \r\n into \r\r\n (which breaks cmd's if() block parsing)
-    updater.write_bytes(bat.encode("ascii"))
+    # PowerShell updater: wait for the OLD process to fully exit, replace,
+    # restart once. The old instance holds the local port until it dies, so
+    # launching immediately races it - poll Get-Process until it's gone.
+    # (cmd's `timeout` fails in detached/redirected contexts; PowerShell's
+    # Start-Sleep does not, so we use a .ps1 instead of a .bat.)
+    ps = (
+        "$target = '{target}'\n"
+        "$new = '{new_exe}'\n"
+        "while (Get-Process -Name SimpleMail -ErrorAction SilentlyContinue) {\n"
+        "  Start-Sleep -Seconds 2\n"
+        "}\n"
+        "Copy-Item -Force $new $target\n"
+        "Remove-Item -Force $new\n"
+        "Start-Process -FilePath $target\n"
+    ).format(target=str(target), new_exe=str(new_exe))
+    updater.write_text(ps, encoding="utf-8")
 
     # detach the updater so it survives this process's exit
     creationflags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
         subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     subprocess.Popen(
-        ["cmd", "/c", str(updater)],
+        ["powershell", "-NoProfile", "-WindowStyle", "Hidden",
+         "-ExecutionPolicy", "Bypass", "-File", str(updater)],
         close_fds=True, creationflags=creationflags,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
