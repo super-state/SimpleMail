@@ -51,7 +51,7 @@ else:
     _WEBVIEW_IMPORT_ERROR = None
 
 APP_NAME = "SimpleMail"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 APP_REPO = "super-state/SimpleMail"  # owner/repo for auto-updates
 CONFIG_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -203,7 +203,7 @@ def fetch_envelopes(imap, folder, limit):
     try:
         typ, fdata = imap.uid(
             "fetch", uidlist,
-            "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)] BODY.PEEK[TEXT]<0.200>)",
+            "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)] BODY.PEEK[TEXT]<0.2000>)",
         )
         cur = None  # current envelope being assembled
         for item in fdata:
@@ -226,22 +226,78 @@ def fetch_envelopes(imap, folder, limit):
                 }
                 envelopes.append(cur)
             elif "BODY[TEXT]" in desc and cur is not None:
-                snippet = payload.decode("utf-8", "replace").strip()
-                if "<" in snippet:
-                    snippet = html_to_text(snippet)
-                else:
-                    # drop MIME boundary / header noise from multipart text
-                    lines = [
-                        ln for ln in snippet.splitlines()
-                        if not re.match(r"^--[a-zA-Z0-9_]+$", ln)
-                        and not ln.lower().startswith(("content-type:", "content-transfer-encoding:"))
-                    ]
-                    snippet = " ".join(l.strip() for l in lines if l.strip())
+                snippet = decode_snippet(payload)
                 cur["snippet"] = snippet[:180]
     except Exception:
         pass
     envelopes.reverse()
     return envelopes
+
+
+def decode_snippet(raw):
+    """Turn a raw BODY[TEXT] peek into a clean one-line preview.
+
+    The peek is the *start of the MIME structure* for multipart messages:
+    possibly a leading blank line, a boundary line, Content-* headers, then
+    the body (quoted-printable or base64). We extract the real boundary
+    name, re-wrap it as a multipart message, and pick the longest readable
+    text part - so previews are real sentences, not MIME scaffolding.
+    """
+    if not raw:
+        return ""
+    try:
+        text = raw.decode("utf-8", "replace")
+    except Exception:
+        return ""
+    text = text.lstrip("\r\n")  # some peeks start with a blank line
+    m = re.match(r"^(--[^\r\n]+)", text)
+    if not m:
+        # some messages start with a short preamble ("This is a multi-part
+        # message in MIME format.") before the first boundary - find it
+        m2 = re.search(r"\r?\n(--[^\r\n]+)", text)
+        if m2:
+            m = m2
+    if m:
+        boundary = m.group(1)
+        try:
+            from email import message_from_string
+            from email.policy import default as _pol
+            wrapped = (
+                f"Content-Type: multipart/mixed; boundary=\"{boundary[2:]}\"\r\n\r\n"
+                + text
+            )
+            msg = message_from_string(wrapped, policy=_pol)
+            best = ""
+            for part in msg.walk():
+                ct = part.get_content_type()
+                try:
+                    body = part.get_content()
+                except Exception:
+                    continue
+                if not body or not body.strip():
+                    continue
+                if ct == "text/plain":
+                    cand = collapse_snippet(body)
+                elif ct == "text/html":
+                    cand = collapse_snippet(html_to_text(body))
+                else:
+                    continue
+                if len(cand) > len(best):
+                    best = cand
+            if best:
+                return best
+        except Exception:
+            pass
+    # not multipart scaffolding - plain text or html directly
+    if "<" in text:
+        return collapse_snippet(html_to_text(text))
+    return collapse_snippet(text)
+
+
+def collapse_snippet(s):
+    """Flatten whitespace/newlines into a single readable line."""
+    s = re.sub(r"\s+", " ", s or "")
+    return s.strip()
 
 
 def fetch_message(imap, folder, uid):

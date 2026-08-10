@@ -175,9 +175,9 @@ async function openMessage(uid, el) {
     $("read-header").style.display = "block";
     $("read-subject").textContent = msg.subject;
     $("read-meta").innerHTML =
-      `<div><b>From:</b> ${escapeHtml(msg.sender)}</div>` +
-      `<div><b>To:</b> ${escapeHtml(msg.to)}</div>` +
-      `<div><b>Date:</b> ${escapeHtml(msg.date)}</div>`;
+      `<span class="lbl">From</span><span class="val">${escapeHtml(msg.sender)}</span>` +
+      `<span class="lbl">To</span><span class="val">${escapeHtml(msg.to)}</span>` +
+      `<span class="lbl">Date</span><span class="val">${escapeHtml(msg.date)}</span>`;
     $("read-body").innerHTML = "";
     if (msg.attachments && msg.attachments.length) {
       const wrap = document.createElement("div");
