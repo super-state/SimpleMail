@@ -18,6 +18,7 @@ import json
 import os
 import re
 import smtplib
+import subprocess
 import sys
 import threading
 from email import message_from_bytes
@@ -51,7 +52,7 @@ else:
     _WEBVIEW_IMPORT_ERROR = None
 
 APP_NAME = "SimpleMail"
-APP_VERSION = "1.0.4"
+APP_VERSION = "1.0.5"
 APP_REPO = "super-state/SimpleMail"  # owner/repo for auto-updates
 CONFIG_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -534,6 +535,14 @@ def create_folder(cfg, name):
         imap.logout()
 
 
+def short_sender(sender):
+    """'Instagram <posts-recaps@mail.instagram.com>' -> 'Instagram' (or address)."""
+    m = re.search(r"^([^<]+?)\s*<.*>", sender)
+    if m and m.group(1).strip():
+        return m.group(1).strip()
+    return sender or "Unknown"
+
+
 def sender_domain(sender):
     """'Instagram <posts-recaps@mail.instagram.com>' -> 'instagram.com'."""
     m = re.search(r"<([^>]+)>", sender)
@@ -961,6 +970,144 @@ class Api:
 
 
 # ---------------------------------------------------------------------------
+# Native Windows notifications (toasts, like Outlook)
+# ---------------------------------------------------------------------------
+
+def _xml_escape(s):
+    return (
+        str(s or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&apos;")
+    )
+
+
+def show_toast(title, body):
+    """Fire a native Windows toast notification via the WinRT API.
+
+    Uses PowerShell (always present on Windows, ARM64-native) so we need no
+    extra Python deps. The toast appears in the Action Center exactly like
+    Outlook's - clickable, respects Do Not Disturb, etc.
+    """
+    if os.name != "nt":
+        return
+    title = _xml_escape(title)[:120]
+    body = _xml_escape(body)[:300]
+    xml = (
+        '<toast activationType="foreground">'
+        '<visual><binding template="ToastGeneric">'
+        f"<text>{title}</text><text>{body}</text>"
+        "</binding></visual></toast>"
+    )
+    ps = (
+        "[Windows.UI.Notifications.ToastNotificationManager, "
+        "Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null; "
+        "$xml = New-Object Windows.Data.Xml.Dom.XmlDocument; "
+        f"$xml.LoadXml('{xml}'); "
+        "[Windows.UI.Notifications.ToastNotificationManager]::"
+        "CreateToastNotifier('SimpleMail.App').Show("
+        "[Windows.UI.Notifications.ToastNotification]::new($xml))"
+    )
+    try:
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps],
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
+
+
+class MailPoller(threading.Thread):
+    """Poll the inbox for new mail and raise native toasts.
+
+    Runs every POLL_SECONDS; tracks the highest UID seen so only *new*
+    arrivals notify. Skips senders that learned rules would auto-route
+    elsewhere (they're not "new business mail").
+    """
+
+    POLL_SECONDS = 30
+    LAST_UID_KEY = "poll_last_uid"
+
+    def __init__(self, cfg):
+        super().__init__(daemon=True)
+        self.cfg = cfg
+        self._last_uid = None
+        self._stop = threading.Event()
+
+    def stop(self):
+        self._stop.set()
+
+    def run(self):
+        # initial pass: just record where we are - don't notify for the
+        # existing backlog
+        self._snapshot_uid()
+        while not self._stop.wait(self.POLL_SECONDS):
+            try:
+                self._check_once()
+            except Exception:
+                pass  # transient IMAP/network errors are fine
+
+    def _snapshot_uid(self):
+        try:
+            imap, _, _ = connect_imap(self.cfg)
+            try:
+                imap.select("INBOX", readonly=True)
+                typ, data = imap.uid("search", None, "ALL")
+                if typ == "OK" and data and data[0]:
+                    self._last_uid = int(data[0].split()[-1])
+            finally:
+                imap.logout()
+        except Exception:
+            pass
+
+    def _check_once(self):
+        imap, _, _ = connect_imap(self.cfg)
+        try:
+            imap.select("INBOX", readonly=True)
+            if self._last_uid is None:
+                return  # not armed yet
+            typ, data = imap.uid("search", None, f"UID {self._last_uid + 1}:*")
+            if typ != "OK" or not data or not data[0]:
+                return
+            new_uids = [int(x) for x in data[0].split()]
+            if not new_uids:
+                return
+            uid_list = ",".join(str(u) for u in new_uids)
+            typ, fdata = imap.uid(
+                "fetch", uid_list, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT)] FLAGS)"
+            )
+            seen_uids = set()
+            for item in fdata:
+                if not isinstance(item, tuple):
+                    continue
+                desc = item[0].decode("utf-8", "replace")
+                payload = item[1]
+                m = re.search(r"UID (\d+)", desc)
+                if not m:
+                    continue
+                uid = int(m.group(1))
+                seen_uids.add(uid)
+                if uid <= self._last_uid:
+                    continue
+                msg = message_from_bytes(payload, policy=email_policy)
+                sender = str(msg.get("From", "Unknown"))
+                subject = str(msg.get("Subject", "(no subject)"))
+                domain = sender_domain(sender)
+                rule_target = self.cfg["rules"].get(domain)
+                if rule_target and rule_target != "INBOX":
+                    continue  # learned rule routes this elsewhere
+                show_toast(subject, short_sender(sender))
+            if seen_uids:
+                self._last_uid = max(seen_uids)
+        finally:
+            imap.logout()
+
+
+# ---------------------------------------------------------------------------
 # Entry points
 # ---------------------------------------------------------------------------
 
@@ -1041,7 +1188,18 @@ def main():
             window.native.Icon = NetIcon(str(icon_path))
         except Exception:
             pass
-    webview.start()
+
+    # Native inbox notifications (like Outlook): poll for new mail quietly
+    poller = None
+    if cfg["email"] and cfg["password"]:
+        poller = MailPoller(cfg)
+        poller.start()
+
+    try:
+        webview.start()
+    finally:
+        if poller is not None:
+            poller.stop()
     return 0
 
 
