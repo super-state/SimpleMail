@@ -16,14 +16,19 @@ Usage:  py -3 patch_pywebview.py
 import sys
 from pathlib import Path
 
-WINFORMS = (
-    Path(sys.prefix)
-    / "Lib"
-    / "site-packages"
-    / "webview"
-    / "platforms"
-    / "winforms.py"
-)
+
+def _locate_winforms():
+    """Find winforms.py wherever pip actually put pywebview - the package
+    can land in the interpreter's site-packages OR the per-user one
+    (%APPDATA%\\Python\\...), and sys.prefix only covers the former."""
+    try:
+        import webview
+        return Path(webview.__file__).parent / "platforms" / "winforms.py"
+    except ImportError:
+        return Path(sys.prefix) / "Lib" / "site-packages" / "webview" / "platforms" / "winforms.py"
+
+
+WINFORMS = _locate_winforms()
 
 OLD = """class OpenFolderDialog:
     foldersFilter = 'Folders|\\n'
