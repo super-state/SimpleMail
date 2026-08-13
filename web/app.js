@@ -3,13 +3,17 @@
 
 let api = null;  // set once pywebview has injected its bridge
 const state = {
-  folders: [],          // [{key, name, server}]
+  accounts: [],         // [{id, label, color, identity, signature, ...}]
+  activeAccountId: null,
+  folders: [],          // [{key, name, server}] for the ACTIVE account
   currentFolder: "inbox",
-  messages: [],         // envelope list for current folder
+  messages: [],         // envelope list for current folder (active account)
   selectedUid: null,
-  signature: "",
-  userEmail: "",
 };
+
+function activeAccount() {
+  return state.accounts.find((a) => a.id === state.activeAccountId) || null;
+}
 
 const $ = (id) => document.getElementById(id);
 
@@ -68,6 +72,53 @@ function initials(s) {
   return (words[0][0] + words[1][0]).toUpperCase();
 }
 
+/* ---------------- accounts ---------------- */
+
+function renderAccounts() {
+  const box = $("accounts");
+  box.innerHTML = "";
+  if (state.accounts.length < 2 && state.accounts.length !== 0) {
+    // single account: no switcher chrome needed, but still show whose mail
+    const a = state.accounts[0];
+    box.innerHTML = `<div class="account single" title="${escapeHtml(a.identity)}">
+      <span class="acct-dot" style="background:${escapeHtml(a.color)}"></span>
+      <span class="acct-label">${escapeHtml(a.label)}</span></div>`;
+    return;
+  }
+  state.accounts.forEach((a) => {
+    const btn = document.createElement("button");
+    btn.className = "account" + (a.id === state.activeAccountId ? " active" : "");
+    btn.title = a.identity;
+    btn.innerHTML = `<span class="acct-dot" style="background:${escapeHtml(a.color)}"></span>
+      <span class="acct-label">${escapeHtml(a.label)}</span>`;
+    btn.addEventListener("click", () => selectAccount(a.id));
+    box.appendChild(btn);
+  });
+}
+
+async function selectAccount(accountId) {
+  if (!state.accounts.some((a) => a.id === accountId)) return;
+  state.activeAccountId = accountId;
+  state.selectedUid = null;
+  state.messages = [];
+  renderAccounts();
+  $("msg-list").innerHTML = '<div class="empty">Loading…</div>';
+  $("read-header").style.display = "none";
+  $("read-body").innerHTML = '<div id="loading">Select a message</div>';
+  try { api.set_active_account(accountId); } catch {}
+  try {
+    const res = await api.get_folders(accountId);
+    state.folders = res.folders;
+    if (res.error) toast(res.error, true);
+  } catch (e) {
+    state.folders = [{ key: "inbox", name: "Inbox", server: "INBOX", unread: 0 }];
+    toast(String(e), true);
+  }
+  state.currentFolder = "inbox";
+  renderFolders();
+  selectFolder("inbox");
+}
+
 /* ---------------- folders ---------------- */
 
 function renderFolders() {
@@ -110,7 +161,7 @@ function selectFolder(key) {
 async function loadMessages() {
   const folder = state.folders.find((f) => f.key === state.currentFolder);
   try {
-    const res = await api.list_messages(folder.server);
+    const res = await api.list_messages(state.activeAccountId, folder.server);
     state.messages = res.envelopes;
     renderMessages();
     $("folder-count").textContent = `${res.unread} unread · ${state.messages.length} shown`;
@@ -172,7 +223,7 @@ async function openMessage(uid, el) {
   $("read-body").innerHTML = '<div id="loading"><span class="spinner"></span> Loading…</div>';
   const folder = state.folders.find((f) => f.key === state.currentFolder);
   try {
-    const msg = await api.get_message(folder.server, uid);
+    const msg = await api.get_message(state.activeAccountId, folder.server, uid);
     $("read-header").style.display = "block";
     $("read-subject").textContent = msg.subject;
     $("read-meta").innerHTML =
@@ -193,7 +244,7 @@ async function openMessage(uid, el) {
           btn.disabled = true;
           btn.textContent = "…";
           try {
-            const res = await api.save_attachment(folder.server, uid, btn.dataset.idx);
+            const res = await api.save_attachment(state.activeAccountId, folder.server, uid, btn.dataset.idx);
             toast("Saved to " + res.path);
           } catch (e) {
             toast("Save failed: " + e, true);
@@ -232,9 +283,20 @@ function updateUnreadCount() {
   $("folder-count").textContent = `${unread} unread · ${state.messages.length} shown`;
 }
 
-/* ---------------- compose ---------------- */
+/* ---------------- compose ----------------
+   The compose window is BOUND to one account at open time. The From line is
+   informational only - the backend derives the real identity from the account
+   id, so there is no way to send from the wrong mailbox. */
+
+let composeAccountId = null;
 
 function openCompose(to = "", subject = "", quoteHtml = "") {
+  const acct = activeAccount();
+  if (!acct) { toast("Add an account in Settings first", true); return; }
+  composeAccountId = acct.id;
+  $("compose-from").innerHTML =
+    `<span class="acct-dot" style="background:${escapeHtml(acct.color)}"></span>` +
+    `${escapeHtml(acct.label)} &lt;${escapeHtml(acct.identity)}&gt;`;
   $("compose-to").value = to;
   $("compose-subject").value = subject;
   const body = $("compose-body");
@@ -245,9 +307,9 @@ function openCompose(to = "", subject = "", quoteHtml = "") {
     bq.innerHTML = quoteHtml;
     body.appendChild(bq);
   }
-  if (state.signature) {
+  if (acct.signature) {
     const sig = document.createElement("div");
-    sig.innerHTML = state.signature.replace(/\n/g, "<br>");
+    sig.innerHTML = acct.signature.replace(/\n/g, "<br>");
     body.appendChild(sig);
   }
   $("compose-backdrop").classList.add("show");
@@ -268,13 +330,14 @@ async function sendCompose() {
   const text = composeText();
   const html = composeHtml();
   if (!to) { toast("Enter a recipient", true); return; }
+  if (!composeAccountId) { toast("No account bound to this message", true); return; }
   $("send-btn").disabled = true;
   $("send-btn").innerHTML = '<span class="spinner"></span> Sending…';
   try {
-    await api.send_mail(to, subject, text, html);
+    const res = await api.send_mail(composeAccountId, to, subject, text, html);
     $("compose-backdrop").classList.remove("show");
-    toast("Message sent");
-    if (state.currentFolder === "sent") loadMessages();
+    toast("Sent as " + (res.sent_as || ""));
+    if (state.currentFolder === "sent" && composeAccountId === state.activeAccountId) loadMessages();
   } catch (e) {
     toast("Send failed: " + e, true);
   } finally {
@@ -288,24 +351,36 @@ async function saveDraft() {
   const subject = $("compose-subject").value.trim() || "(no subject)";
   const text = composeText();
   const html = composeHtml();
+  if (!composeAccountId) { toast("No account bound to this message", true); return; }
   try {
-    await api.save_draft(to, subject, text, html);
+    await api.save_draft(composeAccountId, to, subject, text, html);
     $("compose-backdrop").classList.remove("show");
     toast("Draft saved");
-    if (state.currentFolder === "drafts") loadMessages();
+    if (state.currentFolder === "drafts" && composeAccountId === state.activeAccountId) loadMessages();
   } catch (e) {
     toast("Could not save draft: " + e, true);
   }
 }
 
-/* ---------------- settings ---------------- */
+/* ---------------- settings ----------------
+   Accounts are edited on a working copy; nothing persists until Save. */
 
-function renderRules(rules) {
+let editAccounts = [];   // working copy of account dicts
+let editIndex = 0;       // which account the form is showing
+
+const BLANK_ACCOUNT = {
+  id: "", label: "", color: "#2563eb", email: "", password: "",
+  from_email: "", imap_host: "mail.livemail.co.uk", imap_port: 993,
+  smtp_host: "smtp.fasthosts.co.uk", smtp_port: 587, smtp_starttls: true,
+  smtp_user: "", smtp_password: "", signature: "", rules: {},
+};
+
+function renderRules(accountId, rules) {
   const box = $("rules-list");
   box.innerHTML = "";
   const entries = Object.entries(rules || {});
   if (!entries.length) {
-    box.innerHTML = '<span style="color:var(--pico-muted-color)">No rules yet — right-click a message and pick "Move to…" and the app remembers the sender.</span>';
+    box.innerHTML = '<span style="color:var(--pico-muted-color)">No rules yet — right-click a message and pick "Move to…" and the app remembers the sender (per mailbox).</span>';
     return;
   }
   entries.forEach(([domain, folder]) => {
@@ -315,9 +390,10 @@ function renderRules(rules) {
       <button class="outline secondary" style="padding:2px 10px;font-size:0.75rem;margin:0;width:auto">Remove</button>`;
     row.querySelector("button").addEventListener("click", async () => {
       try {
-        await api.remove_rule(domain);
+        await api.remove_rule(accountId, domain);
+        delete rules[domain];
         toast("Rule removed");
-        renderRules(rules);
+        renderRules(accountId, rules);
       } catch (e) {
         toast("Failed: " + e, true);
       }
@@ -326,15 +402,83 @@ function renderRules(rules) {
   });
 }
 
+function renderAccountPicker() {
+  const sel = $("set-account-picker");
+  sel.innerHTML = "";
+  editAccounts.forEach((a, i) => {
+    const opt = document.createElement("option");
+    opt.value = String(i);
+    opt.textContent = (a.label || a.email || "New account") + (a.from_email ? ` — sends as ${a.from_email}` : "");
+    sel.appendChild(opt);
+  });
+  sel.value = String(editIndex);
+}
+
+function stashAccountForm() {
+  const a = editAccounts[editIndex];
+  if (!a) return;
+  a.label = $("set-label").value.trim();
+  a.color = $("set-color").value;
+  a.email = $("set-email").value.trim();
+  a.password = $("set-password").value;
+  a.from_email = $("set-from-email").value.trim();
+  a.imap_host = $("set-imap-host").value.trim();
+  a.imap_port = parseInt($("set-imap-port").value, 10) || 993;
+  a.smtp_host = $("set-smtp-host").value.trim();
+  a.smtp_port = parseInt($("set-smtp-port").value, 10) || 587;
+  a.smtp_user = $("set-smtp-user").value.trim();
+  a.smtp_password = $("set-smtp-password").value;
+  a.signature = $("set-signature").value;
+}
+
+function showAccountForm(i) {
+  editIndex = i;
+  const a = editAccounts[i] || { ...BLANK_ACCOUNT };
+  $("set-label").value = a.label || "";
+  $("set-color").value = a.color || "#2563eb";
+  $("set-email").value = a.email || "";
+  $("set-password").value = a.password || "";
+  $("set-from-email").value = a.from_email || "";
+  $("set-imap-host").value = a.imap_host || "";
+  $("set-imap-port").value = a.imap_port || 993;
+  $("set-smtp-host").value = a.smtp_host || "";
+  $("set-smtp-port").value = a.smtp_port || 587;
+  $("set-smtp-user").value = a.smtp_user || "";
+  $("set-smtp-password").value = a.smtp_password || "";
+  $("set-signature").value = a.signature || "";
+  renderSigPreview();
+  renderRules(a.id, a.rules || {});
+  renderAccountPicker();
+}
+
+function switchEditedAccount() {
+  stashAccountForm();
+  showAccountForm(parseInt($("set-account-picker").value, 10) || 0);
+}
+
+function addAccount() {
+  stashAccountForm();
+  editAccounts.push({ ...BLANK_ACCOUNT });
+  showAccountForm(editAccounts.length - 1);
+  $("set-label").focus();
+}
+
+function removeAccount() {
+  if (editAccounts.length <= 1) { toast("Keep at least one account", true); return; }
+  const a = editAccounts[editIndex];
+  if (!confirm(`Remove the "${a.label || a.email || "new"}" account from this app?\n(The mailbox itself is untouched.)`)) return;
+  editAccounts.splice(editIndex, 1);
+  showAccountForm(Math.max(0, editIndex - 1));
+}
+
 async function openSettings() {
   const cfg = await api.get_config();
-  $("set-email").value = cfg.email || "";
-  $("set-password").value = cfg.password || "";
-  $("set-signature").value = cfg.signature || "";
+  editAccounts = (cfg.accounts || []).map((a) => ({ ...a }));
+  if (!editAccounts.length) editAccounts = [{ ...BLANK_ACCOUNT }];
+  const activeIdx = editAccounts.findIndex((a) => a.id === cfg.active_account);
   $("set-scale").value = cfg.ui_scale || "default";
   $("set-version").textContent = cfg.version || "?";
-  renderSigPreview();
-  renderRules(cfg.rules);
+  showAccountForm(activeIdx >= 0 ? activeIdx : 0);
   $("settings-backdrop").classList.add("show");
 }
 
@@ -358,20 +502,20 @@ async function addSigImage() {
 }
 
 async function saveSettings() {
+  stashAccountForm();
+  const bad = editAccounts.find((a) => !a.email);
+  if (bad) { toast("Every account needs a mailbox email address", true); return; }
   $("settings-save").disabled = true;
   try {
     await api.save_config({
-      email: $("set-email").value.trim(),
-      password: $("set-password").value,
-      signature: $("set-signature").value,
+      accounts: editAccounts,
+      active_account: state.activeAccountId || "",
       ui_scale: $("set-scale").value,
     });
-    state.signature = $("set-signature").value;
-    state.userEmail = $("set-email").value.trim();
     applyScale($("set-scale").value);
     $("settings-backdrop").classList.remove("show");
     toast("Settings saved");
-    await refreshFolders();
+    await reloadAccounts();
   } catch (e) {
     toast("Save failed: " + e, true);
   } finally {
@@ -388,13 +532,11 @@ function applyScale(scale) {
 }
 
 async function testConnection() {
+  stashAccountForm();
   $("test-btn").disabled = true;
   $("test-btn").textContent = "Testing…";
   try {
-    const res = await api.test_connection({
-      email: $("set-email").value.trim(),
-      password: $("set-password").value,
-    });
+    const res = await api.test_connection(editAccounts[editIndex]);
     toast(res.ok ? "Connected!" : res.error || "Failed", !res.ok);
   } catch (e) {
     toast(String(e), true);
@@ -406,14 +548,20 @@ async function testConnection() {
 
 /* ---------------- boot ---------------- */
 
-async function refreshFolders() {
+async function reloadAccounts() {
   const data = await api.get_config();
-  state.folders = data.folders;
-  state.signature = data.signature || "";
-  state.userEmail = data.email || "";
+  state.accounts = data.accounts || [];
   applyScale(data.ui_scale || "default");
-  renderFolders();
-  loadMessages();
+  if (!state.accounts.length) {
+    state.activeAccountId = null;
+    renderAccounts();
+    return;
+  }
+  const wanted = state.accounts.some((a) => a.id === state.activeAccountId)
+    ? state.activeAccountId
+    : (data.active_account && state.accounts.some((a) => a.id === data.active_account)
+        ? data.active_account : state.accounts[0].id);
+  await selectAccount(wanted);
 }
 
 async function init() {
@@ -429,6 +577,9 @@ async function init() {
   $("settings-save").addEventListener("click", saveSettings);
   $("settings-cancel").addEventListener("click", () => $("settings-backdrop").classList.remove("show"));
   $("test-btn").addEventListener("click", testConnection);
+  $("set-account-picker").addEventListener("change", switchEditedAccount);
+  $("acct-add-btn").addEventListener("click", addAccount);
+  $("acct-remove-btn").addEventListener("click", removeAccount);
   $("delete-btn").addEventListener("click", deleteSelected);
   $("reply-btn").addEventListener("click", replyTo);
   $("forward-btn").addEventListener("click", forwardMessage);
@@ -453,17 +604,16 @@ async function init() {
 
   try {
     const data = await api.get_config();
-    if (!data.email) {
-      toast("Enter your email settings to get started");
+    if (!data.accounts || !data.accounts.length) {
+      toast("Add your first mail account to get started");
       openSettings();
       return;
     }
-    state.folders = data.folders;
-    state.signature = data.signature || "";
-    state.userEmail = data.email || "";
+    state.accounts = data.accounts;
     applyScale(data.ui_scale || "default");
-    renderFolders();
-    loadMessages();
+    const startId = state.accounts.some((a) => a.id === data.active_account)
+      ? data.active_account : state.accounts[0].id;
+    await selectAccount(startId);
     checkForUpdates(true);  // silent check on startup
   } catch (e) {
     document.getElementById("msg-list").innerHTML =
@@ -477,7 +627,7 @@ async function markAllRead() {
   const folder = state.folders.find((f) => f.key === state.currentFolder);
   if (!folder) return;
   try {
-    const res = await api.mark_all_read(folder.server);
+    const res = await api.mark_all_read(state.activeAccountId, folder.server);
     toast(`Marked ${res.count} message${res.count === 1 ? "" : "s"} as read`);
     await loadMessages();
   } catch (e) {
@@ -489,7 +639,7 @@ async function markUnread() {
   if (!state.selectedUid) return;
   const folder = state.folders.find((f) => f.key === state.currentFolder);
   try {
-    await api.set_seen(folder.server, state.selectedUid, false);
+    await api.set_seen(state.activeAccountId, folder.server, state.selectedUid, false);
     const idx = state.messages.findIndex((m) => m.uid === state.selectedUid);
     if (idx >= 0) state.messages[idx].seen = false;
     renderMessages();
@@ -505,7 +655,7 @@ async function deleteSelected() {
   if (!confirm("Delete this message?")) return;
   const folder = state.folders.find((f) => f.key === state.currentFolder);
   try {
-    await api.delete_message(folder.server, state.selectedUid);
+    await api.delete_message(state.activeAccountId, folder.server, state.selectedUid);
     state.messages = state.messages.filter((m) => m.uid !== state.selectedUid);
     state.selectedUid = null;
     $("read-header").style.display = "none";
@@ -542,7 +692,7 @@ async function quoteOriginal(m) {
   // fetch the full message to quote its body
   const folder = state.folders.find((f) => f.key === state.currentFolder);
   try {
-    const msg = await api.get_message(folder.server, m.uid);
+    const msg = await api.get_message(state.activeAccountId, folder.server, m.uid);
     const src = msg.html || `<pre>${escapeHtml(msg.text || "")}</pre>`;
     const fromLine = `On ${msg.date}, ${escapeHtml(shortFrom(msg.sender))} wrote:`;
     return `<div><i>${fromLine}</i></div>${src}`;
@@ -600,7 +750,7 @@ async function ctxMoveTo(target) {
   const folder = state.folders.find((f) => f.key === state.currentFolder);
   if (!msg || !folder) return;
   try {
-    const res = await api.move_message(folder.server, ctxUid, target, msg.sender, true);
+    const res = await api.move_message(state.activeAccountId, folder.server, ctxUid, target, msg.sender, true);
     state.messages = state.messages.filter((m) => m.uid !== ctxUid);
     if (state.selectedUid === ctxUid) {
       state.selectedUid = null;
@@ -623,8 +773,8 @@ async function ctxNewFolder() {
   const name = prompt("New folder name:", "Marketing");
   if (!name || !name.trim()) return;
   try {
-    await api.create_folder(name.trim());
-    await refreshFolders();
+    await api.create_folder(state.activeAccountId, name.trim());
+    await selectAccount(state.activeAccountId);  // reload this account's folders
     toast(`Folder "${name.trim()}" created`);
   } catch (e) {
     toast("Create failed: " + e, true);

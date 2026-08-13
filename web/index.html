@@ -71,6 +71,38 @@
   }
   #sidebar-footer { margin-top: auto; display: flex; flex-direction: column; gap: 4px; }
 
+  /* ---- Accounts (sidebar switcher) ---- */
+  #accounts { display: flex; flex-direction: column; gap: 2px; margin-bottom: 10px; }
+  .account {
+    display: flex; align-items: center; gap: 9px;
+    padding: 7px 12px; border-radius: 8px;
+    border: none; background: transparent; width: 100%; text-align: left;
+    font-size: 0.88rem; color: #374151; cursor: pointer;
+  }
+  .account:hover { background: #e9eef5; }
+  .account.active { background: #dbe6fb; font-weight: 700; }
+  .account.single { cursor: default; color: var(--pico-muted-color); font-size: 0.8rem; }
+  .acct-dot {
+    width: 10px; height: 10px; min-width: 10px; border-radius: 50%;
+    display: inline-block;
+  }
+  .acct-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #accounts + hr { border: none; border-top: 1px solid var(--pico-muted-border-color); margin: 0 8px 8px; }
+
+  /* ---- Compose From strip (identity is locked; display only) ---- */
+  .from-strip {
+    display: flex; align-items: center; gap: 8px;
+    background: #f3f6fb; border: 1px solid var(--pico-muted-border-color);
+    border-radius: 8px; padding: 8px 12px; font-size: 0.88rem; color: #374151;
+  }
+  .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
+  .settings-grid .field.wide { grid-column: 1 / -1; }
+  .acct-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+  .acct-toolbar select { margin: 0; flex: 1; }
+  .acct-toolbar button { margin: 0; width: auto; padding: 6px 12px; font-size: 0.8rem; }
+  details.advanced { margin-bottom: 12px; }
+  details.advanced summary { font-size: 0.85rem; font-weight: 600; cursor: pointer; color: var(--pico-muted-color); }
+
   /* ---- List pane ---- */
   #list-pane {
     width: 380px;
@@ -385,6 +417,8 @@
     </div>
     <button id="compose-btn" class="contrast">+  New message</button>
 
+    <div id="accounts"></div>
+    <hr>
     <div id="folders"></div>
 
     <div id="sidebar-footer">
@@ -445,6 +479,7 @@
   <div class="modal-backdrop" id="compose-backdrop">
     <div class="modal">
       <h2>New message</h2>
+      <div class="field"><label>From (fixed to this mailbox)</label><div id="compose-from" class="from-strip"></div></div>
       <div class="field"><label>To</label><input type="text" id="compose-to" placeholder="name@example.com"></div>
       <div class="field"><label>Subject</label><input type="text" id="compose-subject"></div>
       <div class="field"><label>Message</label>
@@ -462,9 +497,30 @@
   <div class="modal-backdrop" id="settings-backdrop">
     <div class="modal">
       <h2>Settings</h2>
-      <div class="field"><label>Email address</label><input type="text" id="set-email"></div>
-      <div class="field"><label>Password</label><input type="password" id="set-password"></div>
-      <div class="field"><label>Signature (added to new messages)</label>
+      <div class="acct-toolbar">
+        <select id="set-account-picker"></select>
+        <button class="outline" id="acct-add-btn">+ Add account</button>
+        <button class="outline secondary" id="acct-remove-btn">Remove</button>
+      </div>
+      <div class="settings-grid">
+        <div class="field"><label>Account name (shown in sidebar & as sender name)</label><input type="text" id="set-label" placeholder="Playloudr"></div>
+        <div class="field"><label>Colour</label><input type="color" id="set-color" value="#2563eb" style="height:42px;padding:4px"></div>
+        <div class="field"><label>Mailbox email (login)</label><input type="text" id="set-email" placeholder="name@example.com"></div>
+        <div class="field"><label>Mailbox password</label><input type="password" id="set-password"></div>
+      </div>
+      <details class="advanced">
+        <summary>Advanced — identity &amp; servers (only when sending address differs from the mailbox)</summary>
+        <div class="settings-grid" style="margin-top:10px">
+          <div class="field wide"><label>Send as (From address — leave blank to use the mailbox email)</label><input type="text" id="set-from-email" placeholder="hello@yourdomain.com"></div>
+          <div class="field"><label>IMAP server</label><input type="text" id="set-imap-host"></div>
+          <div class="field"><label>IMAP port</label><input type="text" id="set-imap-port"></div>
+          <div class="field"><label>SMTP server</label><input type="text" id="set-smtp-host"></div>
+          <div class="field"><label>SMTP port</label><input type="text" id="set-smtp-port"></div>
+          <div class="field"><label>SMTP username (blank = mailbox email)</label><input type="text" id="set-smtp-user"></div>
+          <div class="field"><label>SMTP password (blank = mailbox password)</label><input type="password" id="set-smtp-password"></div>
+        </div>
+      </details>
+      <div class="field"><label>Signature for this account (added to new messages)</label>
         <textarea id="set-signature" style="min-height:90px"></textarea>
         <div id="sig-preview"></div>
         <button class="outline" id="sig-image-btn" style="margin-top:8px; padding:3px 12px; font-size:0.8rem; width:auto">🖼 Add image to signature</button></div>
@@ -474,7 +530,7 @@
           <option value="default" selected>Default</option>
           <option value="large">Large</option>
         </select></div>
-      <div class="field"><label>Learned rules (right-click a message to teach the app)</label>
+      <div class="field"><label>Learned rules for this account (right-click a message to teach the app)</label>
         <div id="rules-list" style="font-size:0.82rem"></div></div>
       <div class="field" style="display:flex;align-items:center;gap:10px">
         <button class="outline" id="upd-check" style="padding:3px 12px;font-size:0.8rem;width:auto;margin:0">Check for updates</button>
