@@ -52,24 +52,63 @@ else:
     _WEBVIEW_IMPORT_ERROR = None
 
 APP_NAME = "SimpleMail"
-APP_VERSION = "1.0.10"
+APP_VERSION = "1.1.0"
 APP_REPO = "super-state/SimpleMail"  # owner/repo for auto-updates
 CONFIG_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
 DEFAULTS = {
-    "email": "",
-    "password": "",
-    "signature": "",
+    "accounts": [],          # list of account dicts (see ACCOUNT_DEFAULTS)
+    "active_account": "",    # id of the last-used account
+    "max_messages": 100,
+    "ui_scale": "default",  # compact | default | large
+}
+
+# One entry per mailbox. IDENTITY ISOLATION IS THE POINT of this schema:
+# every account carries its own servers, credentials, From address, signature
+# and learned rules, and the backend only ever derives the From address from
+# the account that owns the mailbox - never from anything the UI sends.
+ACCOUNT_DEFAULTS = {
+    "id": "",                # stable slug, never shown
+    "label": "",             # human name shown in the sidebar / From display name
+    "color": "#2563eb",      # account accent so mailboxes are visually unmistakable
+    "email": "",             # IMAP login, and the default identity
+    "password": "",          # IMAP login password (and SMTP unless overridden)
+    "from_email": "",        # identity override (e.g. hello@playloudr.com while
+                             # the mailbox itself lives on another domain)
     "imap_host": "mail.livemail.co.uk",
     "imap_port": 993,
     "smtp_host": "smtp.fasthosts.co.uk",
     "smtp_port": 587,
     "smtp_starttls": True,
-    "folder": "INBOX",
-    "max_messages": 100,
-    "ui_scale": "default",  # compact | default | large
+    "smtp_user": "",         # SMTP login override (e.g. Resend's "resend")
+    "smtp_password": "",     # SMTP password override (e.g. a Resend API key)
+    "signature": "",
+    "rules": {},             # learned sender-domain -> folder moves, per account
 }
+
+# Legacy (v1.0.x) single-account keys, migrated into accounts[0] on first load.
+_LEGACY_KEYS = ("email", "password", "signature", "imap_host", "imap_port",
+                "smtp_host", "smtp_port", "smtp_starttls", "rules")
+
+
+def _slugify(s):
+    s = re.sub(r"[^a-z0-9]+", "-", str(s or "").lower()).strip("-")
+    return s or "account"
+
+
+def normalize_account(raw):
+    """Fill an account dict with defaults; never mutates the input."""
+    acct = dict(ACCOUNT_DEFAULTS)
+    acct["rules"] = {}
+    for key in ACCOUNT_DEFAULTS:
+        if key in (raw or {}):
+            acct[key] = raw[key]
+    if not acct["id"]:
+        acct["id"] = _slugify(acct["email"].split("@")[-1].split(".")[0] or acct["label"])
+    if not acct["label"]:
+        acct["label"] = acct["email"] or acct["id"]
+    return acct
 
 
 # ---------------------------------------------------------------------------
@@ -87,17 +126,66 @@ class Config:
                 self.data.update(json.load(fh))
         except (OSError, ValueError):
             pass
+        self._migrate_legacy()
+        self.data["accounts"] = [normalize_account(a) for a in self.data.get("accounts", [])]
+
+    def _migrate_legacy(self):
+        """v1.0.x kept a single account's fields at the top level."""
+        if self.data.get("accounts"):
+            return
+        legacy_email = self.data.get("email", "")
+        if not legacy_email:
+            return
+        acct = normalize_account({k: self.data[k] for k in _LEGACY_KEYS if k in self.data})
+        domain = legacy_email.split("@")[-1].split(".")[0]
+        acct["label"] = domain.replace("-", " ").title() if domain else legacy_email
+        self.data["accounts"] = [acct]
+        self.data["active_account"] = acct["id"]
+        for k in _LEGACY_KEYS:
+            self.data.pop(k, None)
+        try:
+            self.save()
+        except OSError:
+            pass  # migration re-runs next boot; nothing is lost
 
     def save(self):
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         with open(CONFIG_FILE, "w", encoding="utf-8") as fh:
             json.dump(self.data, fh, indent=2)
 
+    # -- accounts ----------------------------------------------------------
+    def accounts(self):
+        return self.data.get("accounts", [])
+
+    def account(self, account_id):
+        """The account dict for an id. Raises on an unknown id rather than
+        falling back to another account - a silent fallback is exactly how a
+        reply would leave from the wrong address."""
+        for acct in self.accounts():
+            if acct["id"] == account_id:
+                return acct
+        raise KeyError(f"Unknown account: {account_id!r}")
+
     def __getitem__(self, key):
         return self.data[key]
 
     def __setitem__(self, key, value):
         self.data[key] = value
+
+
+# ---------------------------------------------------------------------------
+# Identity helpers - the single choke points for who a message is "from" and
+# how SMTP authenticates. Everything that sends goes through these.
+# ---------------------------------------------------------------------------
+
+def from_address(acct):
+    return (acct.get("from_email") or acct["email"]).strip()
+
+
+def smtp_credentials(acct):
+    user = (acct.get("smtp_user") or acct["email"]).strip()
+    password = acct.get("smtp_password") or acct["password"]
+    return user, password
 
 
 # ---------------------------------------------------------------------------
@@ -391,10 +479,18 @@ def html_to_text(html):
     return text.strip() or "(empty html message)"
 
 
-def send_message(cfg, to, subject, body, body_html=None, save_sent=True):
-    """Send via SMTP (HTML body supported), then append a copy to Sent."""
+def send_message(acct, to, subject, body, body_html=None, save_sent=True):
+    """Send via the ACCOUNT'S OWN SMTP as the ACCOUNT'S OWN identity, then
+    append a copy to that same account's Sent folder.
+
+    The From address is derived here from the account and nowhere else -
+    callers cannot supply one, so a message can never leave a mailbox under
+    another account's identity."""
+    from email.utils import formataddr
+
     msg = EmailMessage()
-    msg["From"] = cfg["email"]
+    sender = from_address(acct)
+    msg["From"] = formataddr((acct.get("label") or "", sender)) if acct.get("label") else sender
     msg["To"] = to
     msg["Subject"] = subject
     if body_html:
@@ -402,16 +498,17 @@ def send_message(cfg, to, subject, body, body_html=None, save_sent=True):
         msg.add_alternative(body_html, subtype="html")
     else:
         msg.set_content(body or "")
-    with smtplib.SMTP(cfg["smtp_host"], int(cfg["smtp_port"]), timeout=30) as smtp:
+    smtp_user, smtp_password = smtp_credentials(acct)
+    with smtplib.SMTP(acct["smtp_host"], int(acct["smtp_port"]), timeout=30) as smtp:
         smtp.ehlo()
-        if cfg["smtp_starttls"]:
+        if acct["smtp_starttls"]:
             smtp.starttls()
             smtp.ehlo()
-        smtp.login(cfg["email"], cfg["password"])
+        smtp.login(smtp_user, smtp_password)
         smtp.send_message(msg)
     if save_sent:
         try:
-            imap, folders, sent_flag = connect_imap(cfg)
+            imap, folders, sent_flag = connect_imap(acct)
             try:
                 sent = pick_sent_folder(folders, sent_flag)
                 imap.append(sent, r"(\Seen)", None, msg.as_bytes())
@@ -421,10 +518,10 @@ def send_message(cfg, to, subject, body, body_html=None, save_sent=True):
             pass  # sent copy is best-effort; the mail itself went out
 
 
-def save_draft_message(cfg, to, subject, body, body_html=None):
+def save_draft_message(acct, to, subject, body, body_html=None):
     import imaplib
     msg = EmailMessage()
-    msg["From"] = cfg["email"]
+    msg["From"] = from_address(acct)
     msg["To"] = to
     msg["Subject"] = subject
     if body_html:
@@ -432,7 +529,7 @@ def save_draft_message(cfg, to, subject, body, body_html=None):
         msg.add_alternative(body_html, subtype="html")
     else:
         msg.set_content(body or "")
-    imap, folders, _ = connect_imap(cfg)
+    imap, folders, _ = connect_imap(acct)
     try:
         drafts = next((f for f in folders if f.lower() in ("drafts",)), "Drafts")
         imap.append(drafts, r"(\Draft)", None, msg.as_bytes())
@@ -554,15 +651,18 @@ def sender_domain(sender):
     return ".".join(parts[-2:]) if len(parts) >= 2 else host
 
 
-def learn_rule(cfg, domain, target_folder):
-    """Remember: mail from this domain goes to target_folder."""
-    rules = cfg.data.setdefault("rules", {})
-    rules[domain] = target_folder
+def learn_rule(cfg, account_id, domain, target_folder):
+    """Remember: mail from this domain goes to target_folder - for ONE account.
+    Rules are per-mailbox so a routing habit on one account can never move
+    another account's mail."""
+    acct = cfg.account(account_id)
+    acct.setdefault("rules", {})[domain] = target_folder
     cfg.save()
 
 
-def remove_rule(cfg, domain):
-    rules = cfg.data.get("rules", {})
+def remove_rule(cfg, account_id, domain):
+    acct = cfg.account(account_id)
+    rules = acct.get("rules", {})
     if domain in rules:
         del rules[domain]
         cfg.save()
@@ -570,10 +670,11 @@ def remove_rule(cfg, domain):
     return False
 
 
-def apply_rules(cfg, server_folder, envelopes):
+def apply_rules(cfg, account_id, server_folder, envelopes):
     """Move any envelope whose sender domain has a learned rule targeting a
     different folder. Returns (kept_envelopes, moved_count)."""
-    rules = cfg.data.get("rules", {})
+    acct = cfg.account(account_id)
+    rules = acct.get("rules", {})
     if not rules:
         return envelopes, 0
     moves = {}  # uid -> target folder
@@ -587,30 +688,31 @@ def apply_rules(cfg, server_folder, envelopes):
             kept.append(env)
     for uid, target in moves.items():
         try:
-            move_message(cfg, server_folder, uid, target)
+            move_message(acct, server_folder, uid, target)
         except Exception:
             pass
     return kept, len(moves)
 
 
-def check_connection(cfg):
+def check_connection(acct):
     """Returns list of (ok: bool, line: str)."""
     results = []
     try:
-        imap, folders, _ = connect_imap(cfg)
-        results.append((True, f"IMAP login OK ({cfg['imap_host']}:{cfg['imap_port']})"))
+        imap, folders, _ = connect_imap(acct)
+        results.append((True, f"IMAP login OK ({acct['imap_host']}:{acct['imap_port']})"))
         results.append((True, f"Folders: {', '.join(folders[:8]) or '(none listed)'}"))
         imap.logout()
     except Exception as e:
         results.append((False, f"IMAP failed: {e}"))
     try:
-        with smtplib.SMTP(cfg["smtp_host"], int(cfg["smtp_port"]), timeout=30) as s:
+        smtp_user, smtp_password = smtp_credentials(acct)
+        with smtplib.SMTP(acct["smtp_host"], int(acct["smtp_port"]), timeout=30) as s:
             s.ehlo()
-            if cfg["smtp_starttls"]:
+            if acct["smtp_starttls"]:
                 s.starttls()
                 s.ehlo()
-            s.login(cfg["email"], cfg["password"])
-            results.append((True, f"SMTP login OK ({cfg['smtp_host']}:{cfg['smtp_port']})"))
+            s.login(smtp_user, smtp_password)
+            results.append((True, f"SMTP login OK ({acct['smtp_host']}:{acct['smtp_port']}) as {smtp_user}"))
     except Exception as e:
         results.append((False, f"SMTP failed: {e}"))
     return results
@@ -775,16 +877,53 @@ class Api:
         except Exception:
             pass
 
+    def _acct(self, account_id):
+        """Resolve an account id to its config. Raises on unknown ids -
+        NO fallback account, ever. A fallback is how mail crosses accounts."""
+        return self.cfg.account(account_id)
+
     def get_config(self):
         self._log("CALL get_config")
         cfg = self.cfg
+        accounts = []
+        for acct in cfg.accounts():
+            accounts.append({
+                "id": acct["id"],
+                "label": acct["label"],
+                "color": acct.get("color") or "#2563eb",
+                "email": acct["email"],
+                "password": acct["password"],
+                "from_email": acct.get("from_email", ""),
+                "identity": from_address(acct),
+                "imap_host": acct["imap_host"],
+                "imap_port": acct["imap_port"],
+                "smtp_host": acct["smtp_host"],
+                "smtp_port": acct["smtp_port"],
+                "smtp_starttls": acct["smtp_starttls"],
+                "smtp_user": acct.get("smtp_user", ""),
+                "smtp_password": acct.get("smtp_password", ""),
+                "signature": acct.get("signature", ""),
+                "rules": acct.get("rules", {}),
+            })
+        return {
+            "accounts": accounts,
+            "active_account": cfg.data.get("active_account", ""),
+            "ui_scale": cfg["ui_scale"],
+            "version": APP_VERSION,
+            "arch": current_arch(),
+        }
+
+    def get_folders(self, account_id):
+        """Folder list + unread badges for ONE account."""
+        self._log(f"CALL get_folders {account_id}")
+        acct = self._acct(account_id)
         folders = []
-        if cfg["email"] and cfg["password"]:
+        error = None
+        if acct["email"] and acct["password"]:
             try:
-                imap, server_folders, _ = connect_imap(cfg)
+                imap, server_folders, _ = connect_imap(acct)
                 try:
                     folders = map_folders(server_folders)
-                    # unread counts per folder for the sidebar badges
                     for f in folders:
                         try:
                             imap.select(f["server"], readonly=True)
@@ -796,89 +935,105 @@ class Api:
                     imap.logout()
             except Exception as e:
                 folders = [{"key": "inbox", "name": "Inbox", "server": "INBOX", "unread": 0}]
-                # surface the login problem to the UI
-                self._last_error = str(e)
-        return {
-            "email": cfg["email"],
-            "password": cfg["password"],
-            "signature": cfg["signature"],
-            "ui_scale": cfg["ui_scale"],
-            "folders": folders,
-            "rules": cfg.data.get("rules", {}),
-            "version": APP_VERSION,
-            "arch": current_arch(),
-            "error": getattr(self, "_last_error", None),
-        }
+                error = str(e)
+        return {"folders": folders, "error": error}
 
-    def save_config(self, data):
-        self._log("CALL save_config")
-        self.cfg["email"] = data.get("email", "")
-        self.cfg["password"] = data.get("password", "")
-        self.cfg["signature"] = data.get("signature", "")
-        if data.get("ui_scale") in ("compact", "default", "large"):
-            self.cfg["ui_scale"] = data["ui_scale"]
+    def set_active_account(self, account_id):
+        self._log(f"CALL set_active_account {account_id}")
+        self._acct(account_id)  # validate
+        self.cfg["active_account"] = account_id
         self.cfg.save()
         return {"ok": True}
 
+    def save_config(self, data):
+        self._log("CALL save_config")
+        incoming = data.get("accounts", [])
+        # Preserve learned rules across saves: the settings UI doesn't edit
+        # them, so merge each account's stored rules back in by id.
+        existing_rules = {a["id"]: a.get("rules", {}) for a in self.cfg.accounts()}
+        accounts = []
+        seen_ids = set()
+        for raw in incoming:
+            acct = normalize_account(raw)
+            while acct["id"] in seen_ids:  # keep ids unique
+                acct["id"] += "-2"
+            seen_ids.add(acct["id"])
+            if "rules" not in raw or not raw.get("rules"):
+                acct["rules"] = existing_rules.get(acct["id"], {})
+            accounts.append(acct)
+        self.cfg["accounts"] = accounts
+        active = data.get("active_account", "")
+        if not any(a["id"] == active for a in accounts):
+            active = accounts[0]["id"] if accounts else ""
+        self.cfg["active_account"] = active
+        if data.get("ui_scale") in ("compact", "default", "large"):
+            self.cfg["ui_scale"] = data["ui_scale"]
+        self.cfg.save()
+        return {"ok": True, "accounts": [a["id"] for a in accounts], "active_account": active}
+
     def test_connection(self, data):
         self._log("CALL test_connection")
-        test_cfg = dict(self.cfg.data)
-        test_cfg["email"] = data.get("email", "")
-        test_cfg["password"] = data.get("password", "")
-        results = check_connection(test_cfg)
+        acct = normalize_account(data or {})
+        results = check_connection(acct)
         ok = all(r[0] for r in results)
         return {"ok": ok, "error": None if ok else "; ".join(l for okk, l in results if not okk)}
 
-    def list_messages(self, server_folder):
-        self._log(f"CALL list_messages {server_folder}")
-        imap, _, _ = connect_imap(self.cfg)
+    def list_messages(self, account_id, server_folder):
+        self._log(f"CALL list_messages {account_id} {server_folder}")
+        acct = self._acct(account_id)
+        imap, _, _ = connect_imap(acct)
         try:
             envelopes = fetch_envelopes(imap, server_folder, int(self.cfg["max_messages"]))
         finally:
             imap.logout()
-        envelopes, moved = apply_rules(self.cfg, server_folder, envelopes)
+        envelopes, moved = apply_rules(self.cfg, account_id, server_folder, envelopes)
         if moved:
             # re-open a fresh connection; apply_rules used its own
-            imap2, _, _ = connect_imap(self.cfg)
+            imap2, _, _ = connect_imap(acct)
             try:
                 envelopes = fetch_envelopes(imap2, server_folder, int(self.cfg["max_messages"]))
-                envelopes, _ = apply_rules(self.cfg, server_folder, envelopes)
+                envelopes, _ = apply_rules(self.cfg, account_id, server_folder, envelopes)
             finally:
                 imap2.logout()
         unread = sum(1 for e in envelopes if not e["seen"])
         return {"envelopes": envelopes, "unread": unread, "auto_moved": moved}
 
-    def get_message(self, server_folder, uid):
-        self._log(f"CALL get_message {server_folder} {uid}")
-        imap, _, _ = connect_imap(self.cfg)
+    def get_message(self, account_id, server_folder, uid):
+        self._log(f"CALL get_message {account_id} {server_folder} {uid}")
+        acct = self._acct(account_id)
+        imap, _, _ = connect_imap(acct)
         try:
             return fetch_message(imap, server_folder, uid)
         finally:
             imap.logout()
 
-    def send_mail(self, to, subject, body, body_html=None):
-        self._log(f"CALL send_mail to={to} subject={subject[:40]}")
-        send_message(self.cfg, to, subject, body, body_html=body_html)
+    def send_mail(self, account_id, to, subject, body, body_html=None):
+        """Send as the given account. The From identity comes from the
+        account config alone - there is deliberately no from parameter."""
+        self._log(f"CALL send_mail {account_id} to={to} subject={subject[:40]}")
+        acct = self._acct(account_id)
+        send_message(acct, to, subject, body, body_html=body_html)
+        return {"ok": True, "sent_as": from_address(acct)}
+
+    def save_draft(self, account_id, to, subject, body, body_html=None):
+        self._log(f"CALL save_draft {account_id} subject={subject[:40]}")
+        acct = self._acct(account_id)
+        save_draft_message(acct, to, subject, body, body_html=body_html)
         return {"ok": True}
 
-    def save_draft(self, to, subject, body, body_html=None):
-        self._log(f"CALL save_draft subject={subject[:40]}")
-        save_draft_message(self.cfg, to, subject, body, body_html=body_html)
-        return {"ok": True}
-
-    def mark_all_read(self, server_folder):
-        self._log(f"CALL mark_all_read {server_folder}")
-        count = mark_all_read(self.cfg, server_folder)
+    def mark_all_read(self, account_id, server_folder):
+        self._log(f"CALL mark_all_read {account_id} {server_folder}")
+        count = mark_all_read(self._acct(account_id), server_folder)
         return {"count": count}
 
-    def set_seen(self, server_folder, uid, seen):
-        self._log(f"CALL set_seen {server_folder} {uid} seen={seen}")
-        set_seen(self.cfg, server_folder, uid, bool(seen))
+    def set_seen(self, account_id, server_folder, uid, seen):
+        self._log(f"CALL set_seen {account_id} {server_folder} {uid} seen={seen}")
+        set_seen(self._acct(account_id), server_folder, uid, bool(seen))
         return {"ok": True}
 
-    def save_attachment(self, server_folder, uid, part_index):
-        self._log(f"CALL save_attachment {server_folder} {uid} part={part_index}")
-        path = save_attachment(self.cfg, server_folder, uid, int(part_index))
+    def save_attachment(self, account_id, server_folder, uid, part_index):
+        self._log(f"CALL save_attachment {account_id} {server_folder} {uid} part={part_index}")
+        path = save_attachment(self._acct(account_id), server_folder, uid, int(part_index))
         return {"path": path}
 
     def pick_image(self):
@@ -903,35 +1058,35 @@ class Api:
         data_uri = f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
         return {"name": path.name, "data_uri": data_uri}
 
-    def delete_message(self, server_folder, uid):
-        self._log(f"CALL delete_message {server_folder} {uid}")
-        delete_message(self.cfg, server_folder, uid)
+    def delete_message(self, account_id, server_folder, uid):
+        self._log(f"CALL delete_message {account_id} {server_folder} {uid}")
+        delete_message(self._acct(account_id), server_folder, uid)
         return {"ok": True}
 
-    def move_message(self, server_folder, uid, target, sender="", learn=True):
-        self._log(f"CALL move_message {server_folder} {uid} -> {target} learn={learn}")
-        move_message(self.cfg, server_folder, uid, target)
+    def move_message(self, account_id, server_folder, uid, target, sender="", learn=True):
+        self._log(f"CALL move_message {account_id} {server_folder} {uid} -> {target} learn={learn}")
+        move_message(self._acct(account_id), server_folder, uid, target)
         learned = None
         if learn:
             dom = sender_domain(sender) if sender else None
             if dom:
-                learn_rule(self.cfg, dom, target)
+                learn_rule(self.cfg, account_id, dom, target)
                 learned = dom
         return {"ok": True, "learned": learned}
 
-    def create_folder(self, name):
-        self._log(f"CALL create_folder {name}")
-        create_folder(self.cfg, name)
+    def create_folder(self, account_id, name):
+        self._log(f"CALL create_folder {account_id} {name}")
+        create_folder(self._acct(account_id), name)
         return {"ok": True}
 
-    def remove_rule(self, domain):
-        self._log(f"CALL remove_rule {domain}")
-        removed = remove_rule(self.cfg, domain)
+    def remove_rule(self, account_id, domain):
+        self._log(f"CALL remove_rule {account_id} {domain}")
+        removed = remove_rule(self.cfg, account_id, domain)
         return {"ok": removed}
 
-    def learn_rule(self, domain, target):
-        self._log(f"CALL learn_rule {domain} -> {target}")
-        learn_rule(self.cfg, domain, target)
+    def learn_rule(self, account_id, domain, target):
+        self._log(f"CALL learn_rule {account_id} {domain} -> {target}")
+        learn_rule(self.cfg, account_id, domain, target)
         return {"ok": True}
 
     def check_update(self):
@@ -1032,9 +1187,9 @@ class MailPoller(threading.Thread):
     POLL_SECONDS = 30
     LAST_UID_KEY = "poll_last_uid"
 
-    def __init__(self, cfg):
+    def __init__(self, acct):
         super().__init__(daemon=True)
-        self.cfg = cfg
+        self.acct = acct
         self._last_uid = None
         self._stop = threading.Event()
 
@@ -1053,7 +1208,7 @@ class MailPoller(threading.Thread):
 
     def _snapshot_uid(self):
         try:
-            imap, _, _ = connect_imap(self.cfg)
+            imap, _, _ = connect_imap(self.acct)
             try:
                 imap.select("INBOX", readonly=True)
                 typ, data = imap.uid("search", None, "ALL")
@@ -1065,7 +1220,7 @@ class MailPoller(threading.Thread):
             pass
 
     def _check_once(self):
-        imap, _, _ = connect_imap(self.cfg)
+        imap, _, _ = connect_imap(self.acct)
         try:
             imap.select("INBOX", readonly=True)
             if self._last_uid is None:
@@ -1097,10 +1252,11 @@ class MailPoller(threading.Thread):
                 sender = str(msg.get("From", "Unknown"))
                 subject = str(msg.get("Subject", "(no subject)"))
                 domain = sender_domain(sender)
-                rule_target = self.cfg["rules"].get(domain)
+                rule_target = self.acct.get("rules", {}).get(domain)
                 if rule_target and rule_target != "INBOX":
                     continue  # learned rule routes this elsewhere
-                show_toast(subject, short_sender(sender))
+                label = self.acct.get("label") or self.acct.get("email") or ""
+                show_toast(f"[{label}] {subject}" if label else subject, short_sender(sender))
             if seen_uids:
                 self._last_uid = max(seen_uids)
         finally:
@@ -1116,11 +1272,17 @@ def main():
 
     if "--check" in sys.argv:
         print(f"Config: {CONFIG_FILE}")
-        print(f"Account: {cfg['email'] or '(not set - run the app and enter credentials)'}")
-        results = check_connection(cfg)
-        for ok, line in results:
-            print(("  OK   " if ok else "  FAIL ") + line)
-        return 0 if all(ok for ok, _ in results) else 1
+        if not cfg.accounts():
+            print("Account: (not set - run the app and enter credentials)")
+            return 1
+        all_ok = True
+        for acct in cfg.accounts():
+            print(f"Account: {acct['label']} <{from_address(acct)}> (mailbox {acct['email']})")
+            results = check_connection(acct)
+            for ok, line in results:
+                print(("  OK   " if ok else "  FAIL ") + line)
+            all_ok = all_ok and all(ok for ok, _ in results)
+        return 0 if all_ok else 1
 
     # Taskbar identity: without an AppUserModelID the icon won't pin/group
     # properly from a PyInstaller onefile build.
@@ -1189,16 +1351,19 @@ def main():
         except Exception:
             pass
 
-    # Native inbox notifications (like Outlook): poll for new mail quietly
-    poller = None
-    if cfg["email"] and cfg["password"]:
-        poller = MailPoller(cfg)
-        poller.start()
+    # Native inbox notifications (like Outlook): one quiet poller per account,
+    # each toast labelled with its mailbox so arrivals are never ambiguous.
+    pollers = []
+    for acct in cfg.accounts():
+        if acct["email"] and acct["password"]:
+            poller = MailPoller(acct)
+            poller.start()
+            pollers.append(poller)
 
     try:
         webview.start()
     finally:
-        if poller is not None:
+        for poller in pollers:
             poller.stop()
     return 0
 
