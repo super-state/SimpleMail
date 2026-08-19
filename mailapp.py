@@ -52,7 +52,7 @@ else:
     _WEBVIEW_IMPORT_ERROR = None
 
 APP_NAME = "SimpleMail"
-APP_VERSION = "1.1.3"
+APP_VERSION = "1.1.4"
 APP_REPO = "super-state/SimpleMail"  # owner/repo for auto-updates
 CONFIG_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -805,6 +805,25 @@ def _frozen_exe_path():
     return None
 
 
+def _launch_updater(updater_path):
+    """Launch the updater script so it survives this process's exit.
+
+    NOTE: DETACHED_PROCESS breaks powershell -File (the script silently never
+    runs - verified empirically Aug 2026). CREATE_NEW_PROCESS_GROUP alone is
+    enough to survive the app's os._exit(); -WindowStyle Hidden keeps the
+    console out of sight.
+    """
+    import subprocess
+
+    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    subprocess.Popen(
+        ["powershell", "-NoProfile", "-WindowStyle", "Hidden",
+         "-ExecutionPolicy", "Bypass", "-File", str(updater_path)],
+        close_fds=True, creationflags=creationflags,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+
 def apply_update(asset_url):
     """Download the new exe next to the running one and restart via updater.
 
@@ -844,16 +863,8 @@ def apply_update(asset_url):
     ).replace("__TARGET__", str(target)).replace("__NEW_EXE__", str(new_exe))
     updater.write_text(ps, encoding="utf-8")
 
-    # detach the updater so it survives this process's exit
-    creationflags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
-        subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    subprocess.Popen(
-        ["powershell", "-NoProfile", "-WindowStyle", "Hidden",
-         "-ExecutionPolicy", "Bypass", "-File", str(updater)],
-        close_fds=True, creationflags=creationflags,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    # give the updater a moment to start, then exit so the file unlocks
+    # launch the updater, then exit so the file unlocks
+    _launch_updater(updater)
     import time
     time.sleep(2)
     os._exit(0)
