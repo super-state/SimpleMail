@@ -52,7 +52,7 @@ else:
     _WEBVIEW_IMPORT_ERROR = None
 
 APP_NAME = "SimpleMail"
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.1.2"
 APP_REPO = "super-state/SimpleMail"  # owner/repo for auto-updates
 CONFIG_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -808,7 +808,7 @@ def _frozen_exe_path():
 def apply_update(asset_url):
     """Download the new exe next to the running one and restart via updater.
 
-    The running exe cannot overwrite itself, so we write an update.bat that
+    The running exe cannot overwrite itself, so we write an _update.ps1 that
     waits for this process to exit, replaces the exe, and relaunches it.
     """
     import subprocess
@@ -828,16 +828,20 @@ def apply_update(asset_url):
     # launching immediately races it - poll Get-Process until it's gone.
     # (cmd's `timeout` fails in detached/redirected contexts; PowerShell's
     # Start-Sleep does not, so we use a .ps1 instead of a .bat.)
+    # NOTE: build the script with .replace(), NOT str.format() - PowerShell's
+    # literal braces (while {...}, Start-Sleep) get parsed by format() as
+    # replacement fields and raise KeyError ('\n  Start-Sleep -Seconds 2\n').
     ps = (
-        "$target = '{target}'\n"
-        "$new = '{new_exe}'\n"
+        "$target = '__TARGET__'\n"
+        "$new = '__NEW_EXE__'\n"
         "while (Get-Process -Name SimpleMail -ErrorAction SilentlyContinue) {\n"
         "  Start-Sleep -Seconds 2\n"
         "}\n"
         "Copy-Item -Force $new $target\n"
         "Remove-Item -Force $new\n"
         "Start-Process -FilePath $target\n"
-    ).format(target=str(target), new_exe=str(new_exe))
+        "Remove-Item -Force $PSCommandPath -ErrorAction SilentlyContinue\n"
+    ).replace("__TARGET__", str(target)).replace("__NEW_EXE__", str(new_exe))
     updater.write_text(ps, encoding="utf-8")
 
     # detach the updater so it survives this process's exit
