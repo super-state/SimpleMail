@@ -111,11 +111,37 @@ if updater.exists():
           "Get-Process -Name SimpleMail" in ps
           and "Start-Sleep -Seconds 2" in ps
           and "PSCommandPath" in ps)
-check("T2: updater launched detached via powershell",
+check("T2: updater launched hidden via powershell",
       len(popen_calls) == 1 and "powershell" in popen_calls[0][0][0].lower()
       and "-File" in popen_calls[0][0]
-      and popen_calls[0][1].get("creationflags", 0) & 0x00000008,  # DETACHED_PROCESS
+      and popen_calls[0][1].get("creationflags", 0) & 0x00000200  # CREATE_NEW_PROCESS_GROUP
+      and "Hidden" in popen_calls[0][0],
       str(popen_calls))
+check("T2: NOT DETACHED_PROCESS (that breaks powershell -File, v1.1.4 regression)",
+      not (popen_calls[0][1].get("creationflags", 0) & 0x00000008), str(popen_calls))
+
+# ---------------------------------------------------------------------------
+# T2b: the launch form actually EXECUTES the script (v1.1.2-v1.1.3 bug:
+# DETACHED_PROCESS made powershell silently never run the ps1)
+# ---------------------------------------------------------------------------
+
+if shutil.which("powershell"):
+    launch_log = SCRATCH / "launch-log.txt"
+    launch_ps1 = SCRATCH / "t-launch.ps1"
+    launch_ps1.write_text(
+        f"Set-Content -Path '{launch_log}' -Value 'ran'\n"
+        "Remove-Item -Force $PSCommandPath -ErrorAction SilentlyContinue\n",
+        encoding="utf-8")
+    m._launch_updater(launch_ps1)
+    deadline = time.time() + 15
+    while time.time() < deadline and not launch_log.exists():
+        time.sleep(1)
+    check("T2b: launched updater script actually executes",
+          launch_log.exists() and launch_log.read_text().strip() == "ran",
+          "<no log>" if not launch_log.exists() else launch_log.read_text())
+    check("T2b: launched ps1 self-deletes", not launch_ps1.exists())
+else:
+    print("SKIP  T2b: no powershell on PATH")
 
 # ---------------------------------------------------------------------------
 # T3: PowerShell parses the generated ps1 (syntax gate)
