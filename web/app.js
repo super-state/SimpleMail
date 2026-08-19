@@ -797,7 +797,11 @@ async function checkForUpdates(silent = false) {
       $("update-backdrop").classList.add("show");
       return true;
     }
-    if (!silent) toast("You're on the latest version (" + (res.local_version || "?") + ")");
+    if (res.error) {
+      if (!silent) toast("Update check failed: " + res.error, true);
+    } else if (!silent) {
+      toast("You're on the latest version (" + (res.local_version || "?") + ")");
+    }
     return false;
   } catch (e) {
     if (!silent) toast("Update check failed: " + e, true);
