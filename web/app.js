@@ -604,6 +604,7 @@ async function init() {
 
   try {
     const data = await api.get_config();
+    checkForUpdates(true);  // silent check on startup - even when logged out
     if (!data.accounts || !data.accounts.length) {
       toast("Add your first mail account to get started");
       openSettings();
@@ -614,7 +615,6 @@ async function init() {
     const startId = state.accounts.some((a) => a.id === data.active_account)
       ? data.active_account : state.accounts[0].id;
     await selectAccount(startId);
-    checkForUpdates(true);  // silent check on startup
   } catch (e) {
     document.getElementById("msg-list").innerHTML =
       '<div class="empty">Failed to start: ' + escapeHtml(String(e)) + "</div>";

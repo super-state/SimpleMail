@@ -52,7 +52,7 @@ else:
     _WEBVIEW_IMPORT_ERROR = None
 
 APP_NAME = "SimpleMail"
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.3"
 APP_REPO = "super-state/SimpleMail"  # owner/repo for auto-updates
 CONFIG_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "config.json"
