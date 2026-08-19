@@ -52,7 +52,7 @@ else:
     _WEBVIEW_IMPORT_ERROR = None
 
 APP_NAME = "SimpleMail"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 APP_REPO = "super-state/SimpleMail"  # owner/repo for auto-updates
 CONFIG_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -1097,7 +1097,9 @@ class Api:
         except Exception as e:
             return {"available": False, "error": str(e)}
         if not info or not info["asset_url"]:
-            return {"available": False, "error": "No matching release asset"}
+            arch = info["arch"] if info else current_arch()
+            return {"available": False,
+                    "error": f"No {arch} build published for this release yet"}
         local = parse_version(APP_VERSION)
         remote = info["version"]
         available = bool(local and remote and remote > local)
